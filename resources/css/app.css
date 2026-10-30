@@ -1,3 +1,136 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-night text-parchment font-sans antialiased min-h-screen;
+    background-image: radial-gradient(ellipse at 50% 0%, #1d1a52 0%, #0a0918 65%);
+    background-repeat: no-repeat;
+  }
+}
+
+@layer components {
+  .glow-card {
+    @apply rounded-2xl border border-marigold/30 bg-dusk/70 backdrop-blur;
+    box-shadow: 0 0 40px rgba(246, 162, 30, 0.08);
+  }
+  .field {
+    @apply w-full rounded-xl border border-parchment/20 bg-night/70 px-4 py-3 text-parchment placeholder-parchment/40;
+  }
+  .field:focus {
+    @apply outline-none border-marigold ring-2 ring-marigold/40;
+  }
+  .btn-marigold {
+    @apply inline-flex items-center justify-center rounded-xl bg-marigold px-6 py-3 font-semibold text-night transition;
+  }
+  .btn-marigold:hover {
+    @apply bg-amber;
+  }
+  .btn-marigold:disabled {
+    @apply opacity-50 cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-teal/60 px-4 py-3 text-teal transition;
+  }
+  .btn-ghost:hover {
+    @apply bg-teal/10;
+  }
+}
+
+/* Candle loader */
+.candle { display: flex; flex-direction: column; align-items: center; }
+.candle-body {
+  width: 14px;
+  height: 44px;
+  border-radius: 3px;
+  background: linear-gradient(#f5ecd9, #d9c9a3);
+}
+.flame {
+  width: 18px;
+  height: 34px;
+  margin-bottom: 2px;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  background: radial-gradient(ellipse at 50% 70%, #fff6c9 0%, #ffd166 35%, #f6a21e 65%, transparent 72%);
+  box-shadow: 0 0 24px 8px rgba(246, 162, 30, 0.45);
+  transform-origin: 50% 100%;
+  animation: flicker 1.4s infinite ease-in-out;
+}
+@keyframes flicker {
+  0%, 100% { transform: scale(1, 1) rotate(-1deg); opacity: 1; }
+  30% { transform: scale(0.92, 1.08) rotate(2deg); opacity: 0.9; }
+  60% { transform: scale(1.05, 0.95) rotate(-2deg); opacity: 1; }
+}
+
+.rec-dot { animation: pulse-dot 1s infinite; }
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flame, .rec-dot { animation: none; }
+}
+
+/* Altar */
+.altar { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.altar-tier {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 14px;
+  min-height: 92px;
+  padding: 14px 12px 10px;
+  border-radius: 12px;
+  border-bottom: 6px solid #7a3b12;
+  background: linear-gradient(180deg, rgba(246,162,30,0.06), rgba(214,70,143,0.10));
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.altar-tier-0 { width: 62%; }
+.altar-tier-1 { width: 82%; }
+.altar-tier-2 { width: 100%; }
+
+.altar-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 72px;
+  opacity: 0;
+  transform: translateY(10px) scale(0.9);
+  transition: opacity 1.2s ease, transform 1.2s ease;
+}
+.altar-item.show { opacity: 1; transform: none; }
+.altar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  font-size: 28px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(255,209,102,0.25), rgba(10,9,24,0.6));
+  box-shadow: 0 0 18px rgba(246,162,30,0.35);
+}
+.altar-label {
+  margin-top: 4px;
+  max-width: 72px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: rgba(245,236,217,0.8);
+  word-break: break-word;
+}
+
+.fade-in { animation: fade-in 1.4s ease both; }
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .altar-item, .fade-in { transition: none; animation: none; opacity: 1; transform: none; }
+}

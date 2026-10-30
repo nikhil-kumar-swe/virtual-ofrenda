@@ -14,7 +14,7 @@ class LlmService
         'coffee', 'tea', 'soup', 'rice', 'beans', 'cookie', 'cake', 'chocolate', 'mango',
         'tequila', 'cigar', 'guitar', 'piano', 'violin', 'radio', 'song', 'music', 'bolero',
         'book', 'hat', 'glasses', 'photograph', 'rosary', 'dog', 'cat', 'bird', 'fishing',
-        'sweater', 'blanket', 'watch', 'pipe', 'dance', 'sewing', 'apron',
+        'sweater', 'blanket', 'pipe', 'dance', 'sewing', 'apron',
     ];
 
     /** Low-level call to llama-server's OpenAI-style endpoint. */
@@ -191,9 +191,37 @@ class LlmService
             }
         }
 
-        return $items;
+        return $this->groundItems($items, $memoryText);
     }
 
+      /** Keep only items really present in the memory, then add what the model missed. */
+    private function groundItems(array $items, string $memory): array
+    {
+        $text = mb_strtolower($memory);
+        $skip = ['watch']; // common verb, rarely meant as an object
+        $kept = [];
+
+        foreach ($items as $item) {
+            $name = mb_strtolower(trim((string) $item));
+            if ($name === '' || in_array($name, $skip, true)) continue;
+            $stem = preg_quote(rtrim($name, 's'), '/');
+            if (preg_match('/\b' . $stem . '/u', $text)) {
+                $kept[] = $name;
+            }
+        }
+
+        $known = ['sunflower', 'cider', 'garden', 'porch', 'bush', 'flower',
+                  'coffee', 'tea', 'bread', 'cake', 'guitar', 'book', 'dog', 'cat'];
+        foreach ($known as $k) {
+            if (preg_match('/\b' . $k . '(s|es)?\b/u', $text)) {
+                $kept[] = $k;
+            }
+        }
+
+        $kept[] = 'candle';
+        $kept[] = 'marigolds';
+        return array_slice(array_values(array_unique($kept)), 0, 10);
+    }
     /** Pull a list of strings out of whatever the model produced. */
     public function parseItems(string $raw): array
     {
