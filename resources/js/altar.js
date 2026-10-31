@@ -25,6 +25,18 @@ if (root) {
   // ---------- icon map (keyword -> emoji). Unknown items get DEFAULT_ICON ----------
   const DEFAULT_ICON = '🕊️';
   const ICONS = [
+      [/glass|shard|pebble|gem|stone/, '💎'],
+[/ocean|\bsea\b|wave|shell|beach/, '🌊'],
+      [/raincoat|rain ?coat|jacket|coat|cardigan|sweater/, '🧥'],
+[/lavender|lilac/, '💜'],
+[/paint|watercolor|sketch|brush|canvas/, '🎨'],
+[/\bbirds?\b|\bwings?\b|feather/, '🐦'],
+[/thunder|storm|\brain\b/, '⛈️'],
+[/leaf|leaves/, '🍃'],
+[/jeep|wrangler|truck|\bcar\b/, '🚙'],
+[/boots?\b|shoes?\b/, '🥾'],
+[/ticket|stub/, '🎟️'],
+[/receipt/, '🧾'],
     [/marigold|cempas|flower petal/, '🌼'],
         [/sunflower/, '🌻'],
     [/cider/, '🍎'],
@@ -81,7 +93,10 @@ if (root) {
       status: t.status ?? 'pending',
       story: t.story ?? '',
       poem: t.poem ?? '',
-      items: [...new Set(items.map((s) => s.toLowerCase()))],
+            items: (() => {
+        const u = [...new Set(items.map((s) => s.toLowerCase()))];
+        return u.filter((a) => !u.some((b) => b !== a && b.includes(a)));
+      })(),
       error: t.error ?? t.error_message ?? t.message ?? '',
       name: t.name ?? t.memory?.name ?? body?.name ?? '',
       memoryId: t.memory_id ?? t.memory?.id ?? null,
@@ -122,10 +137,11 @@ if (root) {
     const sorted = [...list].sort((a, b) => rank(a) - rank(b));
 
     const n = sorted.length;
-    const bottom = Math.ceil(n * 0.45);
-    const middle = Math.ceil((n - bottom) * 0.6);
-    const top = n - bottom - middle;
-    const sizes = [top, middle, bottom];
+const top = n >= 2 ? (n > 7 ? 2 : 1) : 0;   // candle(s) always get the top tier
+const rest = n - top;
+const bottom = Math.ceil(rest / 2);
+const middle = rest - bottom;
+const sizes = [top, middle, bottom];
 
     let idx = 0;
     let delay = 0;
