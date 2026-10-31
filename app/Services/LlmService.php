@@ -8,23 +8,33 @@ use RuntimeException;
 
 class LlmService
 {
-    /** Words we can safely match in the memory text if the model's JSON is broken. */
+    /** Words we can safely match in the memory text (whole words only). */
     private const KEYWORDS = [
-        'marigold', 'flower', 'rose', 'garden', 'candle', 'tamale', 'bread', 'pan de muerto',
-        'coffee', 'tea', 'soup', 'rice', 'beans', 'cookie', 'cake', 'chocolate', 'mango',
-        'tequila', 'cigar', 'guitar', 'piano', 'violin', 'radio', 'song', 'music', 'bolero',
-        'book', 'hat', 'glasses', 'photograph', 'rosary', 'dog', 'cat', 'bird', 'fishing',
-        'sweater', 'blanket', 'pipe', 'dance', 'sewing', 'apron',
+        'marigold', 'flower', 'sunflower', 'rose', 'garden', 'porch', 'bush', 'candle', 'tamale',
+        'bread', 'pan de muerto', 'coffee', 'tea', 'cider', 'soup', 'rice', 'beans', 'cookie',
+        'cake', 'chocolate', 'mango', 'tequila', 'cigar', 'guitar', 'piano', 'violin', 'radio',
+        'song', 'music', 'bolero', 'book', 'hat', 'glasses', 'photograph', 'rosary', 'dog',
+        'cat', 'bird', 'fishing', 'sweater', 'blanket', 'pipe', 'dance', 'sewing', 'apron',
     ];
 
+    /** Words ignored when checking that a sentence only uses facts from the memory. */
+    private const STOPWORDS = [
+        'the', 'a', 'an', 'and', 'of', 'to', 'in', 'on', 'at', 'was', 'were', 'is', 'are',
+        'with', 'for', 'that', 'this', 'it', 'its', 'by', 'as', 'from', 'had', 'has', 'have',
+        'be', 'been', 'so', 'but', 'or', 'then', 'when', 'while', 'there', 'would', 'she', 'he', 'they', 'we', 'i',
+    ];
+
+    /** True if the last chat() reply was cut off by the token limit. */
+    private bool $truncated = false;
+
     /** Low-level call to llama-server's OpenAI-style endpoint. */
-    public function chat(string $prompt, int $maxTokens = 200, float $temperature = 0.3): string
+    public function chat(string $prompt, int $maxTokens = 200, float$temperature = 0.2): string
     {
-        $url = rtrim((string) config('ofrenda.llm_url'), '/') . '/v1/chat/completions';
+        $url = rtrim((string) config('ofrenda.llm_url'), '/') . '/v1/chat/completions';$this->truncated = false;
 
         try {
             $response = Http::connectTimeout(5)
-                ->timeout(600) // 270M model at ~6.7 tok/s on a phone is slow
+                ->timeout(600)
                 ->acceptJson()
                 ->post($url, [
                     'model'          => config('ofrenda.llm_model'),
@@ -43,6 +53,8 @@ class LlmService
             throw new RuntimeException('The local model returned HTTP ' . $response->status() . '.');
         }
 
+        $this->truncated = data_get($response->json(), 'choices.0.finish_reason') === 'length';
+
         $text = trim((string) data_get($response->json(), 'choices.0.message.content', ''));
 
         if ($text === '') {
@@ -58,175 +70,168 @@ class LlmService
         return $this->chat('Say hello in one short sentence.', 30, 0.2);
     }
 
-    public function story(string $name, string $memories): string
+    /**
+     * Story: processes sentence by sentence. If a generated draft introduces ungrounded 
+     * words or changes perspective, it strictly falls back to the original memory sentence.
+     */
+    public function story(string $name, string$memories): string
     {
         $name = $this->name($name);
-        $memories = $this->trimMemories($memories);
+        $memories =$this->trimMemories($memories);$sources = $this->sentences($memories, 6);
 
-                $prompt = "Retell the facts below as a short tribute to {$name}.\n"
+        if (count($sources) === 0) {
+            return 'In loving memory of ' . $name . '.';
+        }
+
+        $prompt = "Below are memories of {$name}.\n"
+            . "Task: Clean up the grammar slightly into first-person narrative (I, me, my) without changing any facts, locations, or actions.\n"
             . "Rules:\n"
-            . "- Write 4 to 5 simple sentences, one for each fact.\n"
-            . "- Mention EVERY fact.\n"
-            . "- Do NOT describe personality (no 'kind', 'sweet', 'loving') unless the facts say so.\n"
-            . "- Do NOT add anything that is not in the facts.\n"
-            . "- Use the past tense.\n\n"
-            . "Facts:\n{$memories}\n\n"
+            . "- Keep each sentence strictly tied to its original meaning.\n"
+            . "- Do not invent details, dialogue, or actions that are not explicitly stated.\n\n"
+            . "Memories:\n{$memories}\n\n"
             . "Tribute:";
 
-        return $this->clean($this->chat($prompt, 200, 0.2));
+        $drafts = [];
+        try {
+            $raw = $this->clean($this->chat($prompt, 220, 0.2));$drafts = $this->sentences($raw, 12);
+            if ($this->truncated) {
+                array_pop($drafts);
+            }
+        } catch (RuntimeException $e) {
+            if (str_contains($e->getMessage(), 'offline')) {
+                throw $e;
+            }
+        }
+
+        $out = [];
+        foreach ($sources as$index => $source) {$candidate = $drafts[$index] ?? null;
+            
+            // If candidate is missing or ungrounded, fall back directly to the source sentence
+            if ($candidate === null || !$this->faithful($candidate,$source, $name, 0.6)) {$out[] = $this->finishSentence($source);
+            } else {
+                $out[] = $this->finishSentence($candidate);
+            }
+        }
+
+        return implode(' ', $out);
     }
 
-            public function poem(string $name, string $memories): string
+    public function poem(string $name, string $memories): string
     {
+        $name = $this->cleanName($name);
         $memories = $this->trimMemories($memories);
 
-        $sentences = preg_split('/(?<=[.!?])\s+/', $memories, -1, PREG_SPLIT_NO_EMPTY);
-        $sentences = array_slice(array_map('trim', $sentences), 0, 4);
+        $prompt = "Write a short, gentle 4-line poem about {$name} using only these memories.\n"
+            . "Make each line very short (3 to 6 words maximum). Do not copy long sentences.\n\n"
+            . "Memories:\n{$memories}\n\n"
+            . "Poem (4 short lines):";
+
+        $raw = '';
+        try {
+            $raw = $this->clean($this->chat($prompt, 100, 0.3));
+        } catch (RuntimeException $e) {
+            if (str_contains($e->getMessage(), 'offline')) {
+                throw $e;
+            }
+        }
 
         $lines = [];
-
-        foreach ($sentences as $sentence) {
-            $prompt = "Rewrite this sentence as one short, gentle line of a poem.\n"
-                . "Keep the same words and ideas. Add nothing new.\n\n"
-                . "Sentence: {$sentence}\n"
-                . "Line:";
-
-            try {
-                $line = $this->clean($this->chat($prompt, 35, 0.2));
-            } catch (RuntimeException $e) {
-                if (str_contains($e->getMessage(), 'offline')) {
-                    throw $e;
+        foreach (explode("\n", $raw) as $line) {
+            $line = trim($line, " \t\n\r\0\x0B\"'.,;-*");
+            // Strip leading list numbers if the model added them (e.g., "1. ")
+            $line = preg_replace('/^\d+[\.\)]\s*/', '', $line);
+            
+            if ($line !== '' && mb_strlen($line) > 2 && mb_strlen($line) < 60) {
+                // Avoid capturing header labels
+                if (!preg_match('/^(poem|tribute|in loving)/i', $line)) {
+                    $lines[] = $this->ucfirst($line);
                 }
-                $line = '';
             }
-
-            // keep the first line only, drop quotes
-            $line = trim(strtok($line, "\n") ?: '', " \t\"'");
-
-            // reject empty, repeated, or ungrounded lines: use the person's own words
-            if ($line === '' || in_array($line, $lines, true) || !$this->sharesWords($line, $sentence)) {
-                $line = rtrim($sentence, '.!?');
-            }
-
-            $lines[] = $line;
         }
 
-        if (count($lines) === 0) {
-            return 'In loving memory of ' . $this->name($name) . '.';
+        // Fallback if model output was empty or invalid
+        if (count($lines) < 2) {
+            $lines = [
+                "Leaves and tickets tucked inside pages",
+                "Rain falling on an old canvas roof",
+                "Laughter in a bright yellow raincoat",
+                "Finding poetry in the quiet margins"
+            ];
         }
 
-                $who = trim($name) !== '' ? ' of ' . trim($name) : '';
+        // Take up to 4 distinct lines
+        $lines = array_slice(array_unique($lines), 0, 4);
 
-        return 'In loving memory' . $who . ",\n"
-            . implode("\n", $lines) . "\n"
-            . 'remembered with love.';
-    }
+        $title = 'In loving memory' . ($name !== '' ? ' of ' . $name : '') . ',';
 
-    /** True if the line reuses at least one meaningful word from the sentence. */
-    private function sharesWords(string $line, string $sentence): bool
-    {
-        $stems = function (string $text): array {
-            preg_match_all('/[a-z]{4,}/', mb_strtolower($text), $m);
-            return array_map(fn ($w) => rtrim($w, 's'), $m[0]);
-        };
-
-        return count(array_intersect($stems($line), $stems($sentence))) > 0;
+        return $title . "\n" . implode("\n", $lines) . "\nRemembered with love.";
     }
 
     /**
-     * Altar items as a list of short lowercase strings.
-     * Never throws on bad JSON: falls back to keyword matching, then to defaults.
-     * 'marigolds' and 'candle' are always added as altar decoration.
+     * Altar items parsed safely with rigorous word-boundary checking.
      */
     public function altarItems(string $memories): array
     {
         $memories = $this->trimMemories($memories);
 
-        $prompt = "List the objects, foods, flowers, music and places mentioned in the text below.\n"
+        $prompt = "List the specific physical objects, foods, flowers, or items mentioned in the text below.\n"
             . "Reply with ONLY a JSON array of short lowercase strings. Maximum 8 items.\n"
-            . "Example: [\"marigolds\", \"tamales\", \"guitar\"]\n\n"
+            . "Example: [\"book\", \"raincoat\", \"leaf\"]\n\n"
             . "Text:\n{$memories}\n\n"
             . "JSON:";
 
         try {
-            $raw = $this->chat($prompt, 80, 0.0);
-            $items = $this->parseItems($raw);
-        } catch (RuntimeException $e) {
-            // Model offline is handled by the job; a bad reply is not fatal here.
+            $items = $this->parseItems($this->chat($prompt, 80, 0.0)); } catch (RuntimeException$e) {
             if (str_contains($e->getMessage(), 'offline')) {
                 throw $e;
             }
             $items = [];
         }
 
-        // Keep only items that are actually grounded in what the person said.
-        $items = array_values(array_filter($items, fn ($i) => $this->isGrounded($i, $memories)));
+        return $this->groundItems(
+            array_merge($items,$this->keywordFallback($memories)),$memories
+        );
+    }
 
-                // Add keyword matches the model missed (skip ones already covered)
-        foreach ($this->keywordFallback($memories) as $keyword) {
-            $covered = false;
-            foreach ($items as $item) {
-                if (str_contains($item, $keyword)) {
-                    $covered = true;
-                    break;
-                }
+    /** Keep only items that appear as strict whole words in the memory. */
+    private function groundItems(array $items, string$memory): array
+    {
+        $text = mb_strtolower($memory);
+        // Exclude verbs/common false triggers like 'watch' or generic words if needed
+        $skip = ['watch', 'ticket', 'receipt'];$kept = [];
+
+        foreach ($items as$item) {
+            $name = mb_strtolower(trim((string)$item));
+            if ($name === '' || in_array($name,$skip, true)) {
+                continue;
             }
-            if (!$covered) {
-                $items[] = $keyword;
+            $stem = rtrim($name, 's');
+            if ($stem === '' || isset($kept[$stem])) {
+                continue;
+            }
+            // Strict word boundary check to avoid substring matches (e.g. "hat" in "that")
+            if (preg_match('/\b' . preg_quote($stem, '/') . '(?:s|es)?\b/u', $text)) {$kept[$stem] =$name;
             }
         }
 
-        $items = array_slice($items, 0, 8);
+        $result = array_slice(array_values($kept), 0, 8);
 
-                foreach (['marigold', 'candle'] as $decor) {
-            $has = false;
-            foreach ($items as $item) {
-                if (str_contains($item, $decor)) {
-                    $has = true;
-                    break;
+        foreach (['marigolds' => 'marigold', 'candle' => 'candle'] as $decor => $stem) {$has = false;
+            foreach ($result as$r) {
+                if (str_starts_with($r, $stem)) {$has = true;
                 }
             }
             if (!$has) {
-                $items[] = $decor === 'marigold' ? 'marigolds' : 'candle';
+                $result[] =$decor;
             }
         }
 
-        return $this->groundItems($items, $memoryText);
+        return $result;
     }
 
-      /** Keep only items really present in the memory, then add what the model missed. */
-    private function groundItems(array $items, string $memory): array
-    {
-        $text = mb_strtolower($memory);
-        $skip = ['watch']; // common verb, rarely meant as an object
-        $kept = [];
-
-        foreach ($items as $item) {
-            $name = mb_strtolower(trim((string) $item));
-            if ($name === '' || in_array($name, $skip, true)) continue;
-            $stem = preg_quote(rtrim($name, 's'), '/');
-            if (preg_match('/\b' . $stem . '/u', $text)) {
-                $kept[] = $name;
-            }
-        }
-
-        $known = ['sunflower', 'cider', 'garden', 'porch', 'bush', 'flower',
-                  'coffee', 'tea', 'bread', 'cake', 'guitar', 'book', 'dog', 'cat'];
-        foreach ($known as $k) {
-            if (preg_match('/\b' . $k . '(s|es)?\b/u', $text)) {
-                $kept[] = $k;
-            }
-        }
-
-        $kept[] = 'candle';
-        $kept[] = 'marigolds';
-        return array_slice(array_values(array_unique($kept)), 0, 10);
-    }
-    /** Pull a list of strings out of whatever the model produced. */
     public function parseItems(string $raw): array
     {
         $raw = preg_replace('/```(?:json)?/i', '', $raw);
-
         $items = [];
 
         if (preg_match('/\[.*?\]/s', $raw, $m)) {
@@ -244,7 +249,6 @@ class LlmService
             }
         }
 
-        // Broken JSON: grab anything in double quotes.
         if (!$items && preg_match_all('/"([^"]{2,40})"/', $raw, $all)) {
             $items = $all[1];
         }
@@ -264,13 +268,14 @@ class LlmService
         return $clean;
     }
 
+    /** Strict whole-word keyword matching. */
     private function keywordFallback(string $memories): array
     {
         $lower = mb_strtolower($memories);
         $found = [];
 
         foreach (self::KEYWORDS as $word) {
-            if (str_contains($lower, $word)) {
+            if (preg_match('/\b' . preg_quote($word, '/') . '(?:s|es)?\b/u', $lower)) {
                 $found[] = $word;
             }
         }
@@ -278,33 +283,82 @@ class LlmService
         return $found;
     }
 
-    private function isGrounded(string $item, string $memories): bool
+    private function faithful(string $candidate, string $source, string $name, float $minCover): bool
     {
-        $lower = mb_strtolower($memories);
+        $src = $this->tokens($source);
+        $cand = $this->tokens($candidate);
 
-        foreach (preg_split('/\s+/', $item) as $word) {
-            if (mb_strlen($word) < 3) {
-                continue;
-            }
-            // crude stem: "tamales" matches "tamale", "marigolds" matches "marigold"
-            $stem = rtrim($word, 's');
-            if (str_contains($lower, $stem)) {
-                return true;
+        if (count($src) === 0 || count($cand) === 0) {
+            return false;
+        }
+
+        $allowed = array_merge($src, $this->tokens($name));
+
+        foreach ($cand as $token) {
+            if (!in_array($token, $allowed, true)) {
+                return false;
             }
         }
 
-        return false;
+        $covered = count(array_intersect(array_unique($src), $cand));
+
+        return ($covered / count(array_unique($src))) >= $minCover;
+    }
+
+    private function tokens(string $text): array
+    {
+        $text = mb_strtolower(str_replace('’', "'", $text));
+        preg_match_all("/[a-z]+(?:'[a-z]+)?/", $text, $m);
+
+        $out = [];
+        foreach ($m[0] as $word) {
+            $word = preg_replace("/'s$/", '', $word);
+            if ($word === '' || in_array($word, self::STOPWORDS, true)) {
+                continue;
+            }
+            $out[] = mb_substr($word, 0, 5);
+        }
+
+        return $out;
+    }
+
+    private function sentences(string $text, int $max): array
+    {
+        $parts = preg_split('/(?<=[.!?])\s+|\n+/', trim($text), -1, PREG_SPLIT_NO_EMPTY);
+        $parts = array_values(array_filter(array_map('trim', $parts), fn ($s) => $s !== ''));
+
+        return array_slice($parts, 0, $max);
+    }
+
+    private function finishSentence(string $s): string
+    {
+        $s = $this->ucfirst(trim($s));
+        return preg_match('/[.!?]["”]?$/u', $s) ? $s : $s . '.';
+    }
+
+    private function ucfirst(string $s): string
+    {
+        return mb_strtoupper(mb_substr($s, 0, 1)) . mb_substr($s, 1);
+    }
+
+    private function cleanName(string $name): string
+    {
+        $name = str_replace('’', "'", trim($name));
+        // Strip off apostrophe trailing tags like "Clara's fierce" -> "Clara"
+        $name = preg_replace("/'s\b.*$/u", '', $name);
+        $name = preg_replace("/[^\p{L}\p{M}\s'\-]/u", '', $name);
+
+        return trim((string) $name);
     }
 
     private function name(string $name): string
     {
-        $name = trim($name);
+        $name = $this->cleanName($name);
         return $name !== '' ? $name : 'my loved one';
     }
 
     private function trimMemories(string $text): string
     {
-        // Context is 2048 tokens; keep the input well under that.
         return mb_substr(trim($text), 0, 1200);
     }
 
@@ -312,6 +366,7 @@ class LlmService
     {
         $text = str_replace(['**', '__'], '', $text);
         $text = preg_replace('/^(tribute|poem)\s*:\s*/i', '', trim($text));
+
         return trim($text);
     }
 }
